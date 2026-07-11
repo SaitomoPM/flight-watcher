@@ -69,6 +69,12 @@ SKYSCANNER_VERIFY_TOP_N = 2
 SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
 SKYID_CACHE_PATH = os.path.join(os.path.dirname(__file__), "skyid_cache.json")
 
+# Faz 2'de (dönüş taraması) kaç farklı şehir denensin - artırmak daha fazla
+# istek demek ama daha geniş kapsam sağlar. best_outbound_per_dest'te kaç
+# farklı şehir bulunduysa o kadarı zaten üst sınır (27 ülke olsa da farklı
+# günlerde farklı şehirler çıkabildiği için sayı 27'den fazla olabilir).
+TOP_CANDIDATES_FOR_INBOUND_SCAN = 30
+
 
 # ---------------------------------------------------------------------------
 # Travelpayouts (Aviasales) yardımcı fonksiyonları
@@ -336,9 +342,8 @@ def main() -> None:
         if key not in best_outbound_per_dest or o["price"] < best_outbound_per_dest[key]["price"]:
             best_outbound_per_dest[key] = o
 
-    # En ucuz gidişi olan ilk 15 şehri, dönüş taraması için aday seçiyoruz
-    # (tüm 27+ şehir için dönüş taraması yapmak çok fazla istek gerektirir)
-    candidates = sorted(best_outbound_per_dest.values(), key=lambda o: o["price"])[:15]
+    # En ucuz gidişi olan ilk N şehri, dönüş taraması için aday seçiyoruz
+    candidates = sorted(best_outbound_per_dest.values(), key=lambda o: o["price"])[:TOP_CANDIDATES_FOR_INBOUND_SCAN]
 
     # FAZ 2 - DÖNÜŞ TARAMASI: her adayın varış şehrinden gerçek dönüşü bul,
     # gidiş + dönüşü toplayarak GERÇEK toplam maliyeti hesapla

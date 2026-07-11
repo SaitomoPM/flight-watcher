@@ -74,7 +74,8 @@ Eşik altı bir şey bulunursa Telegram'a mesaj gelecek.
   Low-cost havayolları (Wizz Air, Ryanair, easyJet) her yönü ayrı fiyatlandırdığı
   için bu, "paket" round-trip aramaktan genelde çok daha ucuza çıkıyor.
   İki fazlı çalışıyor: Faz 1 en ucuz gidişleri bulur (27 ülke x 3 çıkış),
-  Faz 2 en ucuz 15 adayın gerçek dönüş biletini arar ve toplar.
+  Faz 2 en ucuz `TOP_CANDIDATES_FOR_INBOUND_SCAN` (varsayılan 30) adayın
+  gerçek dönüş biletini arar ve toplar.
 - **Kapsam düzeltmesi**: `destination` parametresine şehir değil ÜLKE kodu
   veriyoruz - API o ülkedeki tüm şehirler arasından en ucuzunu buluyor, elle
   seçilmiş bir listeye bağımlı kalmıyoruz (Debrecen gibi ikincil şehirler dahil).
@@ -82,9 +83,9 @@ Eşik altı bir şey bulunursa Telegram'a mesaj gelecek.
   çağrılıp hangi havayoluna ait olduğu ekleniyor. Bazen boş gelebilir.
 - Skyscanner airport ID eşleştirmeleri (`skyid_cache.json`) GitHub Actions
   cache'inde saklanıyor, her koşuda yeniden çözümlenmiyor (kota tasarrufu için).
-- Toplam istek sayısı ~550-600/koşu (Faz 1 + Faz 2 + havayolu + Skyscanner),
-  ~5-8 dakika sürüyor. Süre uzun gelirse `MARKETS` listesini `["tr"]`'ye
-  indirebilir ya da aday sayısını (`candidates = ...[:15]`) düşürebilirsin.
+- Toplam istek sayısı ~600/koşu (Faz 1 + Faz 2 + havayolu + Skyscanner),
+  ~6-9 dakika sürüyor. Süre uzun gelirse `MARKETS` listesini `["tr"]`'ye
+  indirebilir ya da `TOP_CANDIDATES_FOR_INBOUND_SCAN` sayısını düşürebilirsin.
 - Travelpayouts verisi kullanıcı arama geçmişi cache'inden geliyor (7 gün saklanıyor);
   gerçek zamanlı canlı fiyat değil. Ciddi bir fırsat gördüğünde mutlaka
   Google Flights/Skyscanner'dan güncel fiyatı teyit et.

@@ -61,7 +61,7 @@ SEARCH_START = date.today() + timedelta(days=14)   # en az 2 hafta sonrası
 SEARCH_END = date(2026, 9, 15)                       # yaz sonu
 
 # Bu fiyatın (EUR) altındaki GİDİŞ-DÖNÜŞ bulgular bildirim tetikler
-PRICE_THRESHOLD = 150
+PRICE_THRESHOLD = 80
 
 # Round-trip için kalış süresi. Not: Travelpayouts dokümantasyonu bu parametrenin
 # "hafta" cinsinden olduğunu söylüyor ama gerçek API davranışı GÜN cinsinden

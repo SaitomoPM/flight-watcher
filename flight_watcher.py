@@ -65,7 +65,7 @@ PRICE_THRESHOLD = 150
 
 # Round-trip için kalış süresi (hafta) - month-matrix API bunu istiyor,
 # yoksa sessizce tek yön fiyat döndürüyor
-TRIP_DURATION_WEEKS = 1  # ~1 haftalık tatil; 2 hafta istersen 2 yap
+TRIP_DURATION_WEEKS = 7  # ~1 haftalık tatil; 2 hafta istersen 2 yap
 
 # Aynı rotayı farklı 'market'lerden sorgulamak Aviasales cache'inin farklı
 # dilimlerine erişmemizi sağlıyor - aynı API'den daha geniş örneklem.

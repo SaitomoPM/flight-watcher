@@ -16,6 +16,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Cache Skyscanner airport ID lookups
+        uses: actions/cache@v4
+        with:
+          path: skyid_cache.json
+          key: skyid-cache-v1
+
       - name: Install dependencies
         run: pip install requests
 
@@ -24,4 +30,5 @@ jobs:
           TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: python flight_watcher.py

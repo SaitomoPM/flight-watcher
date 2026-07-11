@@ -55,9 +55,12 @@ SCHENGEN_DESTINATIONS = [
 SEARCH_START = date.today() + timedelta(days=14)   # en az 2 hafta sonrası
 SEARCH_END = date(2026, 9, 15)                       # yaz sonu
 
-# Bu fiyatın (EUR) altındaki tek yön bulgular bildirim tetikler
-# (gidiş-dönüş için pratikte bu değerin ~2 katını düşün)
-PRICE_THRESHOLD = 60
+# Bu fiyatın (EUR) altındaki GİDİŞ-DÖNÜŞ bulgular bildirim tetikler
+PRICE_THRESHOLD = 150
+
+# Round-trip için kalış süresi (hafta) - month-matrix API bunu istiyor,
+# yoksa sessizce tek yön fiyat döndürüyor
+TRIP_DURATION_WEEKS = 1  # ~1 haftalık tatil; 2 hafta istersen 2 yap
 
 TRAVELPAYOUTS_BASE = "https://api.travelpayouts.com"
 
@@ -68,7 +71,9 @@ TRAVELPAYOUTS_BASE = "https://api.travelpayouts.com"
 
 def cheapest_month_prices(token: str, origin: str, destination: str, month: str) -> list[dict]:
     """
-    v2/prices/month-matrix: verilen ay için her günün en ucuz fiyatını döndürür.
+    v2/prices/month-matrix: verilen ay için her günün en ucuz GİDİŞ-DÖNÜŞ
+    fiyatını döndürür. one_way=false + trip_duration olmadan API sessizce
+    tek yön fiyat döndürüyor, bu yüzden ikisi de zorunlu.
     month formatı: 'YYYY-MM-01'
     """
     resp = requests.get(
@@ -79,6 +84,8 @@ def cheapest_month_prices(token: str, origin: str, destination: str, month: str)
             "destination": destination,
             "show_to_affiliates": "false",
             "month": month,
+            "one_way": "false",
+            "trip_duration": TRIP_DURATION_WEEKS,
             "token": token,
         },
         timeout=30,
@@ -147,10 +154,18 @@ def main() -> None:
         print("Eşik altı fiyat bulunamadı.")
         return
 
-    findings.sort(key=lambda f: f["price"])
+    # Her destinasyon için sadece en ucuz bulguyu tut - tek bir şehir
+    # (örn. hep en ucuz olan) tüm bildirim listesini domine etmesin
+    best_per_destination: dict[str, dict] = {}
+    for f in findings:
+        key = f["destination"]
+        if key not in best_per_destination or f["price"] < best_per_destination[key]["price"]:
+            best_per_destination[key] = f
 
-    lines = ["✈️ *Ucuz Schengen uçuşu bulundu!*\n"]
-    for f in findings[:10]:  # en ucuz 10 sonucu bildir
+    diversified = sorted(best_per_destination.values(), key=lambda f: f["price"])
+
+    lines = ["✈️ *Ucuz Schengen uçuşu bulundu! (gidiş-dönüş)*\n"]
+    for f in diversified[:10]:  # en ucuz 10 farklı şehir
         lines.append(
             f"*{f['origin']} → {f['destination']}*: {f['price']} EUR "
             f"({f['depart_date']} - {f.get('return_date', '?')})"

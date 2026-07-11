@@ -68,6 +68,7 @@ TRAVELPAYOUTS_BASE = "https://api.travelpayouts.com"
 SKYSCANNER_VERIFY_TOP_N = 2
 SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
 SKYID_CACHE_PATH = os.path.join(os.path.dirname(__file__), "skyid_cache.json")
+PRICE_HISTORY_PATH = os.path.join(os.path.dirname(__file__), "data", "price_history.csv")
 
 # Faz 2'de (dönüş taraması) kaç farklı şehir denensin - artırmak daha fazla
 # istek demek ama daha geniş kapsam sağlar. best_outbound_per_dest'te kaç
@@ -247,6 +248,35 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fiyat geçmişi (kendi verimizi biriktirmek için) - CSV'ye ekleniyor,
+# workflow bunu her koşu sonunda repoya commit'liyor.
+# ---------------------------------------------------------------------------
+
+def log_price_history(combos: list[dict]) -> None:
+    """Bulunan TÜM kombinasyonları (eşikten bağımsız) CSV'ye ekler."""
+    import csv
+
+    os.makedirs(os.path.dirname(PRICE_HISTORY_PATH), exist_ok=True)
+    file_exists = os.path.exists(PRICE_HISTORY_PATH)
+
+    with open(PRICE_HISTORY_PATH, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow([
+                "run_timestamp", "origin", "destination", "depart_date", "return_date",
+                "outbound_price", "inbound_price", "total_price", "market",
+            ])
+        run_ts = datetime.utcnow().isoformat(timespec="seconds")
+        for c in combos:
+            writer.writerow([
+                run_ts, c["origin"], c["destination"], c["depart_date"], c["return_date"],
+                f"{c['outbound_price']:.2f}", f"{c['inbound_price']:.2f}", f"{c['price']:.2f}",
+                c["market"],
+            ])
+    print(f"Fiyat geçmişine {len(combos)} kayıt eklendi -> {PRICE_HISTORY_PATH}")
+
+
+# ---------------------------------------------------------------------------
 # Ana akış
 # ---------------------------------------------------------------------------
 
@@ -346,8 +376,10 @@ def main() -> None:
     candidates = sorted(best_outbound_per_dest.values(), key=lambda o: o["price"])[:TOP_CANDIDATES_FOR_INBOUND_SCAN]
 
     # FAZ 2 - DÖNÜŞ TARAMASI: her adayın varış şehrinden gerçek dönüşü bul,
-    # gidiş + dönüşü toplayarak GERÇEK toplam maliyeti hesapla
-    combined_findings = []
+    # gidiş + dönüşü toplayarak GERÇEK toplam maliyeti hesapla.
+    # NOT: eşikten BAĞIMSIZ tüm kombinasyonları topluyoruz (all_combos) -
+    # geçmiş veri biriktirmek için, eşik altı olanları bildirim için ayırıyoruz.
+    all_combos = []
     for cand in candidates:
         result = combine_outbound_inbound(
             token, cand["origin"], cand["destination"], cand["depart_date"], months, MARKETS
@@ -356,24 +388,30 @@ def main() -> None:
             continue
         inbound_price, inbound_date = result
         total_price = cand["price"] + inbound_price
-        if total_price <= PRICE_THRESHOLD:
-            combined_findings.append({
-                "origin": cand["origin"],
-                "destination": cand["destination"],
-                "depart_date": cand["depart_date"],
-                "return_date": inbound_date,
-                "outbound_price": cand["price"],
-                "inbound_price": inbound_price,
-                "price": total_price,
-                "market": cand["market"],
-            })
+        all_combos.append({
+            "origin": cand["origin"],
+            "destination": cand["destination"],
+            "depart_date": cand["depart_date"],
+            "return_date": inbound_date,
+            "outbound_price": cand["price"],
+            "inbound_price": inbound_price,
+            "price": total_price,
+            "market": cand["market"],
+        })
+
+    # Geçmiş veri olarak HER ŞEYİ kaydet (eşik altı olsun olmasın) - trend
+    # görmek için lazım. Eşik uygulanmamış ham veri.
+    log_price_history(all_combos)
+
+    combined_findings = [c for c in all_combos if c["price"] <= PRICE_THRESHOLD]
 
     if not combined_findings:
         print(f"Eşik altı fiyat bulunamadı. En ucuz {len(candidates)} adaydan hiçbiri "
               f"{PRICE_THRESHOLD} EUR toplamın altında değildi.")
         # Yine de en ucuz 3 adayı logla ki neye yaklaştığımızı görelim
-        for c in candidates[:3]:
-            print(f"  (bilgi) {c['origin']} → {c['destination']}: sadece gidiş {c['price']} EUR")
+        for c in sorted(all_combos, key=lambda f: f["price"])[:3]:
+            print(f"  (bilgi) {c['origin']} → {c['destination']}: toplam {c['price']:.0f} EUR "
+                  f"(gidiş {c['outbound_price']:.0f} + dönüş {c['inbound_price']:.0f})")
         return
 
     top_candidates = sorted(combined_findings, key=lambda f: f["price"])[:10]

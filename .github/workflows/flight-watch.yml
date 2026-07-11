@@ -6,6 +6,9 @@ on:
     - cron: "0 7,16 * * *"
   workflow_dispatch: {}  # Actions sekmesinden manuel de tetikleyebilirsin
 
+permissions:
+  contents: write  # fiyat geçmişi CSV'sini repoya geri commit'lemek için gerekli
+
 jobs:
   check-flights:
     runs-on: ubuntu-latest
@@ -32,3 +35,16 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: python flight_watcher.py
+
+      - name: Fiyat geçmişini repoya commit'le
+        if: always()  # script Telegram gönderiminde hata verse bile CSV zaten yazılmış olabilir
+        run: |
+          git config user.name "flight-watcher-bot"
+          git config user.email "actions@github.com"
+          if [ -f data/price_history.csv ]; then
+            git add data/price_history.csv
+            git diff --staged --quiet || git commit -m "fiyat gecmisi guncellendi [otomatik]"
+            git push
+          else
+            echo "price_history.csv henuz olusmadi, atlaniyor."
+          fi

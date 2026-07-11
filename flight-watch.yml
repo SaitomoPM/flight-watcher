@@ -1,0 +1,27 @@
+name: Flight Watcher
+
+on:
+  schedule:
+    # Her gün 07:00 ve 16:00 UTC (TR saatiyle yaklaşık 10:00 ve 19:00)
+    - cron: "0 7,16 * * *"
+  workflow_dispatch: {}  # Actions sekmesinden manuel de tetikleyebilirsin
+
+jobs:
+  check-flights:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run flight watcher
+        env:
+          TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python flight_watcher.py

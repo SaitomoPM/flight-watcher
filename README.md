@@ -62,7 +62,7 @@ Eşik altı bir şey bulunursa Telegram'a mesaj gelecek.
 
 `flight_watcher.py` dosyasının başındaki değişkenleri düzenle:
 - `SCHENGEN_DESTINATIONS`: taranacak şehir listesi (ekle/çıkar)
-- `PRICE_THRESHOLD`: bildirim tetikleyen fiyat eşiği (şu an tek yön 60 EUR)
+- `PRICE_THRESHOLD`: bildirim tetikleyen fiyat eşiği (şu an gidiş-dönüş 150 EUR)
 - `SEARCH_START` / `SEARCH_END`: tarama yapılacak tarih aralığı
 - Cron zamanlaması: `.github/workflows/flight-watch.yml` içindeki `cron` satırı
 
@@ -74,10 +74,14 @@ Eşik altı bir şey bulunursa Telegram'a mesaj gelecek.
   doğrulanıyor — bu ikinci kaynak, ilkinin kaçırdığı fırsatları yakalamak için.
 - Skyscanner airport ID eşleştirmeleri (`skyid_cache.json`) GitHub Actions
   cache'inde saklanıyor, her koşuda yeniden çözümlenmiyor (kota tasarrufu için).
+- **Havayolu bilgisi**: Son 10 aday için ayrıca `v1/prices/cheap` endpoint'i
+  çağrılıp hangi havayoluna ait olduğu ekleniyor (`month-matrix` bu bilgiyi
+  vermiyor). Bazen boş gelebilir - cache'te o rotaya ait havayolu verisi
+  olmayabilir, bu durumda mesajda sadece fiyat/tarih görünür.
 - **Round-trip düzeltmesi**: İlk versiyon `month-matrix` endpoint'ini `one_way`/`trip_duration`
   parametreleri olmadan çağırıyordu, bu da API'nin sessizce **tek yön** fiyat döndürmesine
-  neden oluyordu. Artık `one_way=false` + `trip_duration` (hafta cinsinden konaklama, varsayılan 1
-  hafta) gönderiliyor, gerçek gidiş-dönüş fiyatları geliyor. Eşik de buna göre 150 EUR'a çekildi.
+  neden oluyordu. Artık `one_way=false` + `trip_duration` (gün cinsinden konaklama, varsayılan 7
+  gün) gönderiliyor, gerçek gidiş-dönüş fiyatları geliyor. Eşik de buna göre 150 EUR'a çekildi.
 - Bildirimler artık **her şehirden en fazla 1 sonuç** gösteriyor (çeşitlilik için) - tek bir
   şehir tüm listeyi domine etmesin diye.
 - Travelpayouts verisi kullanıcı arama geçmişi cache'inden geliyor (7 gün saklanıyor);

@@ -63,9 +63,11 @@ SEARCH_END = date(2026, 9, 15)                       # yaz sonu
 # Bu fiyatın (EUR) altındaki GİDİŞ-DÖNÜŞ bulgular bildirim tetikler
 PRICE_THRESHOLD = 150
 
-# Round-trip için kalış süresi (hafta) - month-matrix API bunu istiyor,
-# yoksa sessizce tek yön fiyat döndürüyor
-TRIP_DURATION_WEEKS = 7  # ~1 haftalık tatil; 2 hafta istersen 2 yap
+# Round-trip için kalış süresi. Not: Travelpayouts dokümantasyonu bu parametrenin
+# "hafta" cinsinden olduğunu söylüyor ama gerçek API davranışı GÜN cinsinden
+# çalışıyor (test sonucu: trip_duration=1 -> 1 günlük konaklama döndü).
+# Gerçek bir tatil için 5-10 gün arası mantıklı.
+TRIP_DURATION_DAYS = 7  # ~1 haftalık tatil
 
 # Aynı rotayı farklı 'market'lerden sorgulamak Aviasales cache'inin farklı
 # dilimlerine erişmemizi sağlıyor - aynı API'den daha geniş örneklem.
@@ -99,7 +101,7 @@ def cheapest_month_prices(token: str, origin: str, destination: str, month: str,
         "show_to_affiliates": "false",
         "month": month,
         "one_way": "false",
-        "trip_duration": TRIP_DURATION_WEEKS,
+        "trip_duration": TRIP_DURATION_DAYS,
         "market": market,
         "token": token,
     }
@@ -119,6 +121,47 @@ def cheapest_month_prices(token: str, origin: str, destination: str, month: str,
 
 
 _DEBUG_LOGGED = False
+
+# Bölgede sık uçan havayollarının IATA kodu -> isim eşlemesi (mesajda okunaklı
+# göstermek için). Listede olmayan bir kod gelirse ham kodu gösteriyoruz.
+AIRLINE_NAMES = {
+    "TK": "Turkish Airlines", "PC": "Pegasus", "XQ": "SunExpress",
+    "AJ": "AJet", "W6": "Wizz Air", "W9": "Wizz Air Malta",
+    "FR": "Ryanair", "U2": "easyJet", "VY": "Vueling", "EW": "Eurowings",
+    "LO": "LOT Polish Airlines", "RO": "Tarom", "A3": "Aegean Airlines",
+    "JU": "Air Serbia", "OU": "Croatia Airlines", "OS": "Austrian Airlines",
+    "LH": "Lufthansa", "LX": "Swiss", "KL": "KLM", "AF": "Air France",
+    "IB": "Iberia", "AZ": "ITA Airways", "BA": "British Airways",
+}
+
+
+def get_airline_for_route(token: str, origin: str, destination: str, depart_month: str) -> str | None:
+    """
+    v1/prices/cheap: month-matrix'in vermediği havayolu bilgisini almak için
+    sadece SON adaylar için çağrılır (tüm taramada değil).
+    depart_month formatı: 'YYYY-MM'
+    """
+    resp = requests.get(
+        f"{TRAVELPAYOUTS_BASE}/v1/prices/cheap",
+        params={
+            "origin": origin,
+            "destination": destination,
+            "depart_date": depart_month,
+            "currency": "eur",
+            "token": token,
+        },
+        timeout=20,
+    )
+    if resp.status_code != 200:
+        return None
+    dest_data = resp.json().get("data", {}).get(destination, {})
+    if not dest_data:
+        return None
+    first_entry = next(iter(dest_data.values()), {})
+    code = first_entry.get("airline")
+    if not code:
+        return None
+    return AIRLINE_NAMES.get(code, code)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +324,16 @@ def main() -> None:
     diversified = sorted(best_per_destination.values(), key=lambda f: f["price"])
     top_candidates = diversified[:10]
 
+    # Havayolu bilgisi sadece son adaylar için çekiliyor (tüm taramada değil)
+    for f in top_candidates:
+        depart_month = f["depart_date"][:7] if f.get("depart_date") else None  # 'YYYY-MM'
+        if depart_month:
+            try:
+                f["airline"] = get_airline_for_route(token, f["origin"], f["destination"], depart_month)
+            except requests.RequestException:
+                f["airline"] = None
+            time.sleep(0.3)
+
     # İkinci kaynak: en iyi birkaç adayı Skyscanner ile doğrula (varsa key).
     # RapidAPI ücretsiz tier ayda sadece 100 istek verdiği için, günde 2 kez
     # çalışan cron'un sadece SABAH koşusunda doğrulama yapıyoruz (akşam koşusu
@@ -303,10 +356,11 @@ def main() -> None:
 
     lines = ["✈️ *Ucuz Schengen uçuşu bulundu! (gidiş-dönüş)*\n"]
     for f in top_candidates:
+        airline_str = f" - {f['airline']}" if f.get("airline") else ""
         line = (
             f"*{f['origin']} → {f['destination']}*: {f['price']} EUR "
             f"({f['depart_date']} - {f.get('return_date', '?')}) "
-            f"[{f.get('market', '?')}]"
+            f"[{f.get('market', '?')}]{airline_str}"
         )
         if f.get("skyscanner_price") is not None:
             line += f"\n   ↳ Skyscanner doğrulaması: {f['skyscanner_price']:.0f} EUR"

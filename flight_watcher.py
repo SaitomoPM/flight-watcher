@@ -33,35 +33,25 @@ import requests
 
 ORIGINS = ["ESB", "IST", "SAW"]  # Ankara Esenboğa, İstanbul Havalimanı, Sabiha Gökçen
 
-# Schengen bölgesindeki popüler / ucuza uçulabilen şehirler (IATA kodları)
-# Listeyi dilediğin gibi genişlet/daralt
-SCHENGEN_DESTINATIONS = [
-    "BCN",  # Barcelona
-    "MAD",  # Madrid
-    "MXP",  # Milano Malpensa
-    "BGY",  # Milano Bergamo (low-cost hub)
-    "FCO",  # Roma
-    "VIE",  # Viyana
-    "WAW",  # Varşova
-    "KRK",  # Krakow
-    "PRG",  # Prag
-    "BUD",  # Budapeşte
-    "ATH",  # Atina (Schengen değil ama genelde birlikte aranır - istersen çıkar)
-    "AMS",  # Amsterdam
-    "CDG",  # Paris
-    "BER",  # Berlin
-    "ZRH",  # Zürih
-    "LIS",  # Lizbon
-    "OTP",  # Bükreş
-    "SOF",  # Sofya
+# ÖNEMLİ TASARIM DEĞİŞİKLİĞİ: Elle seçilmiş 18 şehirlik liste yerine Schengen
+# ÜLKE kodları kullanıyoruz. Travelpayouts API'sinde destination parametresine
+# ülke kodu verirsen, o ülkedeki TÜM şehirler arasından en ucuzunu buluyor.
+# Bu, Debrecen gibi elle seçilen listede olmayan ikincil/ucuz şehirleri de
+# otomatik olarak kapsıyor - manuel aramanın önüne geçmenin tek yolu bu.
+SCHENGEN_COUNTRIES = [
+    "AT", "BE", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU",
+    "IS", "IT", "LV", "LI", "LT", "LU", "MT", "NL", "NO", "PL",
+    "PT", "SK", "SI", "ES", "SE", "CH", "HR",
 ]
 
 # Tüm yaz esnek tarama aralığı (bugünden itibaren)
 SEARCH_START = date.today() + timedelta(days=14)   # en az 2 hafta sonrası
 SEARCH_END = date(2026, 9, 15)                       # yaz sonu
 
-# Bu fiyatın (EUR) altındaki GİDİŞ-DÖNÜŞ bulgular bildirim tetikler
-PRICE_THRESHOLD = 100
+# Bu fiyatın (EUR) altındaki GİDİŞ-DÖNÜŞ bulgular bildirim tetikler.
+# Gerçek piyasa tabanı ~50-60 EUR civarında görünüyor (tek yön 24 EUR gibi
+# fırsatlar var); bunun biraz üzerinde tutup gerçek dağılımı gözlemleyelim.
+PRICE_THRESHOLD = 90
 
 # Round-trip için kalış süresi. Not: Travelpayouts dokümantasyonu bu parametrenin
 # "hafta" cinsinden olduğunu söylüyor ama gerçek API davranışı GÜN cinsinden
@@ -86,18 +76,19 @@ SKYID_CACHE_PATH = os.path.join(os.path.dirname(__file__), "skyid_cache.json")
 # Travelpayouts (Aviasales) yardımcı fonksiyonları
 # ---------------------------------------------------------------------------
 
-def cheapest_month_prices(token: str, origin: str, destination: str, month: str, market: str) -> list[dict]:
+def cheapest_month_prices(token: str, origin: str, country: str, month: str, market: str) -> list[dict]:
     """
-    v2/prices/month-matrix: verilen ay için her günün en ucuz GİDİŞ-DÖNÜŞ
-    fiyatını döndürür. one_way=false + trip_duration olmadan API sessizce
-    tek yön fiyat döndürüyor, bu yüzden ikisi de zorunlu.
-    month formatı: 'YYYY-MM-01'. market: cache'in hangi ülke sitesinden
-    geldiğini belirler (tr, de, us vb.) - çeşitlilik için değiştiriyoruz.
+    v2/prices/month-matrix: destination'a ÜLKE kodu verildiğinde, o ülkedeki
+    tüm şehirler arasından en ucuzunu bulur - bu sayede elle seçilmiş bir şehir
+    listesine bağımlı kalmadan geniş kapsam elde ediyoruz.
+    one_way=false + trip_duration olmadan API sessizce tek yön fiyat
+    döndürüyor, bu yüzden ikisi de zorunlu. month formatı: 'YYYY-MM-01'.
+    market: cache'in hangi ülke sitesinden geldiğini belirler (tr, de vb.).
     """
     params = {
         "currency": "eur",
         "origin": origin,
-        "destination": destination,
+        "destination": country,
         "show_to_affiliates": "false",
         "month": month,
         "one_way": "false",
@@ -291,18 +282,19 @@ def main() -> None:
     findings = []  # dict listesi: origin, destination, price, depart_date, return_date
 
     for origin in ORIGINS:
-        for dest in SCHENGEN_DESTINATIONS:
+        for country in SCHENGEN_COUNTRIES:
             for month in months:
                 for market in MARKETS:
-                    offers = cheapest_month_prices(token, origin, dest, month, market)
+                    offers = cheapest_month_prices(token, origin, country, month, market)
                     time.sleep(0.3)  # rate limit'e nazik davran
 
                     for offer in offers:
                         price = float(offer.get("value", offer.get("price", 0)))
-                        if 0 < price <= PRICE_THRESHOLD:
+                        actual_destination = offer.get("destination")  # gerçek şehir kodu (örn. DEB)
+                        if actual_destination and 0 < price <= PRICE_THRESHOLD:
                             findings.append({
                                 "origin": origin,
-                                "destination": dest,
+                                "destination": actual_destination,
                                 "price": price,
                                 "depart_date": offer.get("depart_date"),
                                 "return_date": offer.get("return_date"),

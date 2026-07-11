@@ -61,12 +61,20 @@ Eşik altı bir şey bulunursa Telegram'a mesaj gelecek.
 ## Ayarları değiştirmek
 
 `flight_watcher.py` dosyasının başındaki değişkenleri düzenle:
-- `SCHENGEN_DESTINATIONS`: taranacak şehir listesi (ekle/çıkar)
-- `PRICE_THRESHOLD`: bildirim tetikleyen fiyat eşiği (şu an gidiş-dönüş 150 EUR)
+- `SCHENGEN_COUNTRIES`: taranacak ülke kodu listesi (ekle/çıkar) — artık şehir
+  değil ülke bazlı tarıyoruz, API her ülkedeki en ucuz şehri kendisi buluyor
+- `PRICE_THRESHOLD`: bildirim tetikleyen fiyat eşiği (şu an gidiş-dönüş 90 EUR)
 - `SEARCH_START` / `SEARCH_END`: tarama yapılacak tarih aralığı
 - Cron zamanlaması: `.github/workflows/flight-watch.yml` içindeki `cron` satırı
 
 ## Notlar
+- **Kapsam düzeltmesi (önemli)**: İlk versiyon elle seçilmiş 18 şehirlik bir
+  liste kullanıyordu, bu yüzden Debrecen gibi ikincil/ucuz Wizz Air
+  destinasyonlarını kaçırıyordu. Artık `destination` parametresine şehir yerine
+  **ülke kodu** (`HU`, `PL` vb.) veriyoruz — API o ülkedeki tüm şehirler
+  arasından en ucuzunu kendisi buluyor. Bu, manuel aramanın önüne geçmenin
+  asıl yolu; sabit bir şehir listesiyle asla mümkün değildi.
+- 486 istek/koşu civarı (3 çıkış x 27 ülke x 3 ay x 2 market), ~3-5 dakika sürüyor.
 - **Veri kaynakları / çeşitlilik**: Sistem artık iki kaynaklı. Ana tarama
   Travelpayouts (Aviasales meta-search cache'i) üzerinden, `market` parametresi
   (`tr`, `de`) ile çeşitlendirilmiş şekilde yapılıyor. En iyi 2 aday, günde 1 kez

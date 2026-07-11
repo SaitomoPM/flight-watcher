@@ -68,36 +68,29 @@ Eşik altı bir şey bulunursa Telegram'a mesaj gelecek.
 - Cron zamanlaması: `.github/workflows/flight-watch.yml` içindeki `cron` satırı
 
 ## Notlar
-- **Kapsam düzeltmesi (önemli)**: İlk versiyon elle seçilmiş 18 şehirlik bir
-  liste kullanıyordu, bu yüzden Debrecen gibi ikincil/ucuz Wizz Air
-  destinasyonlarını kaçırıyordu. Artık `destination` parametresine şehir yerine
-  **ülke kodu** (`HU`, `PL` vb.) veriyoruz — API o ülkedeki tüm şehirler
-  arasından en ucuzunu kendisi buluyor. Bu, manuel aramanın önüne geçmenin
-  asıl yolu; sabit bir şehir listesiyle asla mümkün değildi.
-- 486 istek/koşu civarı (3 çıkış x 27 ülke x 3 ay x 2 market), ~3-5 dakika sürüyor.
-- **Veri kaynakları / çeşitlilik**: Sistem artık iki kaynaklı. Ana tarama
-  Travelpayouts (Aviasales meta-search cache'i) üzerinden, `market` parametresi
-  (`tr`, `de`) ile çeşitlendirilmiş şekilde yapılıyor. En iyi 2 aday, günde 1 kez
-  (sabah koşusunda), Skyscanner üzerinden (RapidAPI Sky Scrapper) ayrıca
-  doğrulanıyor — bu ikinci kaynak, ilkinin kaçırdığı fırsatları yakalamak için.
+- **Mimari değişikliği (en önemlisi)**: Sistem artık round-trip "paket" fiyatı
+  aramıyor. Bunun yerine flightlist.io gibi araçların kullandığı stratejiyi
+  uyguluyor: **en ucuz GİDİŞ + en ucuz DÖNÜŞÜ ayrı ayrı bulup topluyor.**
+  Low-cost havayolları (Wizz Air, Ryanair, easyJet) her yönü ayrı fiyatlandırdığı
+  için bu, "paket" round-trip aramaktan genelde çok daha ucuza çıkıyor.
+  İki fazlı çalışıyor: Faz 1 en ucuz gidişleri bulur (27 ülke x 3 çıkış),
+  Faz 2 en ucuz 15 adayın gerçek dönüş biletini arar ve toplar.
+- **Kapsam düzeltmesi**: `destination` parametresine şehir değil ÜLKE kodu
+  veriyoruz - API o ülkedeki tüm şehirler arasından en ucuzunu buluyor, elle
+  seçilmiş bir listeye bağımlı kalmıyoruz (Debrecen gibi ikincil şehirler dahil).
+- **Havayolu bilgisi**: Son 10 aday için ayrıca `v1/prices/cheap` endpoint'i
+  çağrılıp hangi havayoluna ait olduğu ekleniyor. Bazen boş gelebilir.
 - Skyscanner airport ID eşleştirmeleri (`skyid_cache.json`) GitHub Actions
   cache'inde saklanıyor, her koşuda yeniden çözümlenmiyor (kota tasarrufu için).
-- **Havayolu bilgisi**: Son 10 aday için ayrıca `v1/prices/cheap` endpoint'i
-  çağrılıp hangi havayoluna ait olduğu ekleniyor (`month-matrix` bu bilgiyi
-  vermiyor). Bazen boş gelebilir - cache'te o rotaya ait havayolu verisi
-  olmayabilir, bu durumda mesajda sadece fiyat/tarih görünür.
-- **Round-trip düzeltmesi**: İlk versiyon `month-matrix` endpoint'ini `one_way`/`trip_duration`
-  parametreleri olmadan çağırıyordu, bu da API'nin sessizce **tek yön** fiyat döndürmesine
-  neden oluyordu. Artık `one_way=false` + `trip_duration` (gün cinsinden konaklama, varsayılan 7
-  gün) gönderiliyor, gerçek gidiş-dönüş fiyatları geliyor. Eşik de buna göre 150 EUR'a çekildi.
-- Bildirimler artık **her şehirden en fazla 1 sonuç** gösteriyor (çeşitlilik için) - tek bir
-  şehir tüm listeyi domine etmesin diye.
+- Toplam istek sayısı ~550-600/koşu (Faz 1 + Faz 2 + havayolu + Skyscanner),
+  ~5-8 dakika sürüyor. Süre uzun gelirse `MARKETS` listesini `["tr"]`'ye
+  indirebilir ya da aday sayısını (`candidates = ...[:15]`) düşürebilirsin.
 - Travelpayouts verisi kullanıcı arama geçmişi cache'inden geliyor (7 gün saklanıyor);
-  gerçek zamanlı canlı fiyat değil, trend/tahmin niteliğinde. Ciddi bir fırsat
-  gördüğünde mutlaka Google Flights/Skyscanner'dan güncel fiyatı teyit et.
+  gerçek zamanlı canlı fiyat değil. Ciddi bir fırsat gördüğünde mutlaka
+  Google Flights/Skyscanner'dan güncel fiyatı teyit et.
 - Bu sistem **arama ve bildirim** yapar, **rezervasyon/ödeme yapmaz** — bilinçli
   olarak böyle tasarlandı: kimlik/ödeme bilgini hiçbir yere göndermiyor.
 - Rate limit (429) hatası alırsan `flight_watcher.py` içindeki `time.sleep(0.3)`
   değerini artır (örn. 1.0).
-- İlk birkaç gün eşiği yüksek tutup gerçek piyasa fiyatlarını gözlemlemeni,
-  sonra `PRICE_THRESHOLD`'u daraltmanı öneririm.
+- İlk birkaç gün eşiği (`PRICE_THRESHOLD`) yüksek tutup gerçek piyasa
+  fiyatlarını gözlemlemeni, sonra daraltmanı öneririm.

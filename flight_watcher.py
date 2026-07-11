@@ -53,11 +53,9 @@ SEARCH_END = date(2026, 9, 15)                       # yaz sonu
 # fırsatlar var); bunun biraz üzerinde tutup gerçek dağılımı gözlemleyelim.
 PRICE_THRESHOLD = 90
 
-# Round-trip için kalış süresi. Not: Travelpayouts dokümantasyonu bu parametrenin
-# "hafta" cinsinden olduğunu söylüyor ama gerçek API davranışı GÜN cinsinden
-# çalışıyor (test sonucu: trip_duration=1 -> 1 günlük konaklama döndü).
-# Gerçek bir tatil için 5-10 gün arası mantıklı.
-TRIP_DURATION_DAYS = 7  # ~1 haftalık tatil
+# Kombinasyon (gidiş + dönüş ayrı ayrı) için kabul edilebilir konaklama süresi
+MIN_STAY_DAYS = 1
+MAX_STAY_DAYS = 14
 
 # Aynı rotayı farklı 'market'lerden sorgulamak Aviasales cache'inin farklı
 # dilimlerine erişmemizi sağlıyor - aynı API'den daha geniş örneklem.
@@ -76,42 +74,29 @@ SKYID_CACHE_PATH = os.path.join(os.path.dirname(__file__), "skyid_cache.json")
 # Travelpayouts (Aviasales) yardımcı fonksiyonları
 # ---------------------------------------------------------------------------
 
-def cheapest_month_prices(token: str, origin: str, country: str, month: str, market: str) -> list[dict]:
+def cheapest_one_way_prices(token: str, origin: str, destination: str, month: str, market: str) -> list[dict]:
     """
-    v2/prices/month-matrix: destination'a ÜLKE kodu verildiğinde, o ülkedeki
-    tüm şehirler arasından en ucuzunu bulur - bu sayede elle seçilmiş bir şehir
-    listesine bağımlı kalmadan geniş kapsam elde ediyoruz.
-    one_way=false + trip_duration olmadan API sessizce tek yön fiyat
-    döndürüyor, bu yüzden ikisi de zorunlu. month formatı: 'YYYY-MM-01'.
-    market: cache'in hangi ülke sitesinden geldiğini belirler (tr, de vb.).
+    v2/prices/month-matrix - TEK YÖN modda (one_way parametresi verilmeden,
+    API'nin varsayılan davranışı bu). destination'a ülke kodu verilirse o
+    ülkedeki tüm şehirler arasından her günün en ucuzunu bulur.
+    Neden tek yön: low-cost havayolları (Wizz Air, Ryanair, easyJet vb.) her
+    yönü ayrı fiyatlandırıyor - en ucuz gidiş + en ucuz dönüşü ayrı ayrı
+    bulup toplamak, "paket" round-trip aramaktan genelde daha ucuza çıkıyor.
+    month formatı: 'YYYY-MM-01'.
     """
     params = {
         "currency": "eur",
         "origin": origin,
-        "destination": country,
+        "destination": destination,
         "show_to_affiliates": "false",
         "month": month,
-        "one_way": "false",
-        "trip_duration": TRIP_DURATION_DAYS,
         "market": market,
         "token": token,
     }
     resp = requests.get(f"{TRAVELPAYOUTS_BASE}/v2/prices/month-matrix", params=params, timeout=30)
     if resp.status_code != 200:
         return []
-    data = resp.json().get("data", []) or []
-
-    # DEBUG: sadece ilk başarılı çağrıda ham veriyi logla (teşhis için)
-    global _DEBUG_LOGGED
-    if not _DEBUG_LOGGED and data:
-        print("DEBUG - gönderilen istek:", resp.url)
-        print("DEBUG - ilk kayıt (ham):", json.dumps(data[0], ensure_ascii=False))
-        _DEBUG_LOGGED = True
-
-    return data
-
-
-_DEBUG_LOGGED = False
+    return resp.json().get("data", []) or []
 
 # Bölgede sık uçan havayollarının IATA kodu -> isim eşlemesi (mesajda okunaklı
 # göstermek için). Listede olmayan bir kod gelirse ham kodu gösteriyoruz.
@@ -272,6 +257,47 @@ def months_between(start: date, end: date) -> list[str]:
     return months
 
 
+def combine_outbound_inbound(
+    token: str, origin: str, destination: str, depart_date: str, months: list[str], markets: list[str]
+) -> tuple[float, str] | None:
+    """
+    Belirli bir varış şehri için, depart_date'ten sonra MIN/MAX_STAY_DAYS
+    penceresine düşen en ucuz DÖNÜŞ biletini arar (tek yön, ters yönde).
+    Bulursa (dönüş_fiyatı, dönüş_tarihi) döndürür.
+    """
+    depart = date.fromisoformat(depart_date)
+    window_start = depart + timedelta(days=MIN_STAY_DAYS)
+    window_end = depart + timedelta(days=MAX_STAY_DAYS)
+
+    candidate_months = sorted({
+        m for m in months
+        if date.fromisoformat(m) <= window_end and date.fromisoformat(m).replace(day=28) >= window_start
+    })
+
+    best = None  # (price, date)
+    for month in candidate_months:
+        for market in markets:
+            offers = cheapest_one_way_prices(token, destination, origin, month, market)
+            time.sleep(0.3)
+            for offer in offers:
+                d = offer.get("depart_date")
+                if not d:
+                    continue
+                try:
+                    offer_date = date.fromisoformat(d)
+                except ValueError:
+                    continue
+                if not (window_start <= offer_date <= window_end):
+                    continue
+                price = float(offer.get("value", offer.get("price", 0)))
+                if price <= 0:
+                    continue
+                if best is None or price < best[0]:
+                    best = (price, d)
+
+    return best
+
+
 def main() -> None:
     token = os.environ["TRAVELPAYOUTS_TOKEN"]
     bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -279,42 +305,73 @@ def main() -> None:
     rapidapi_key = os.environ.get("RAPIDAPI_KEY")  # opsiyonel
 
     months = months_between(SEARCH_START, SEARCH_END)
-    findings = []  # dict listesi: origin, destination, price, depart_date, return_date
 
+    # FAZ 1 - GİDİŞ TARAMASI: her ülke için, her günün en ucuz tek yön
+    # biletini buluyoruz (gerçek varış şehri API tarafından çözümleniyor)
+    outbound_offers = []
     for origin in ORIGINS:
         for country in SCHENGEN_COUNTRIES:
             for month in months:
                 for market in MARKETS:
-                    offers = cheapest_month_prices(token, origin, country, month, market)
-                    time.sleep(0.3)  # rate limit'e nazik davran
-
+                    offers = cheapest_one_way_prices(token, origin, country, month, market)
+                    time.sleep(0.3)
                     for offer in offers:
                         price = float(offer.get("value", offer.get("price", 0)))
-                        actual_destination = offer.get("destination")  # gerçek şehir kodu (örn. DEB)
-                        if actual_destination and 0 < price <= PRICE_THRESHOLD:
-                            findings.append({
-                                "origin": origin,
-                                "destination": actual_destination,
-                                "price": price,
-                                "depart_date": offer.get("depart_date"),
-                                "return_date": offer.get("return_date"),
-                                "market": market,
+                        dest = offer.get("destination")
+                        depart_date = offer.get("depart_date")
+                        if dest and depart_date and price > 0:
+                            outbound_offers.append({
+                                "origin": origin, "destination": dest,
+                                "depart_date": depart_date, "price": price, "market": market,
                             })
 
-    if not findings:
-        print("Eşik altı fiyat bulunamadı.")
+    if not outbound_offers:
+        print("Gidiş bileti bulunamadı.")
         return
 
-    # Her destinasyon için sadece en ucuz bulguyu tut - tek bir şehir
-    # (örn. hep en ucuz olan) tüm bildirim listesini domine etmesin
-    best_per_destination: dict[str, dict] = {}
-    for f in findings:
-        key = f["destination"]
-        if key not in best_per_destination or f["price"] < best_per_destination[key]["price"]:
-            best_per_destination[key] = f
+    # Her varış şehri için en ucuz GİDİŞ'i tut (tek bir şehir domine etmesin)
+    best_outbound_per_dest: dict[str, dict] = {}
+    for o in outbound_offers:
+        key = o["destination"]
+        if key not in best_outbound_per_dest or o["price"] < best_outbound_per_dest[key]["price"]:
+            best_outbound_per_dest[key] = o
 
-    diversified = sorted(best_per_destination.values(), key=lambda f: f["price"])
-    top_candidates = diversified[:10]
+    # En ucuz gidişi olan ilk 15 şehri, dönüş taraması için aday seçiyoruz
+    # (tüm 27+ şehir için dönüş taraması yapmak çok fazla istek gerektirir)
+    candidates = sorted(best_outbound_per_dest.values(), key=lambda o: o["price"])[:15]
+
+    # FAZ 2 - DÖNÜŞ TARAMASI: her adayın varış şehrinden gerçek dönüşü bul,
+    # gidiş + dönüşü toplayarak GERÇEK toplam maliyeti hesapla
+    combined_findings = []
+    for cand in candidates:
+        result = combine_outbound_inbound(
+            token, cand["origin"], cand["destination"], cand["depart_date"], months, MARKETS
+        )
+        if result is None:
+            continue
+        inbound_price, inbound_date = result
+        total_price = cand["price"] + inbound_price
+        if total_price <= PRICE_THRESHOLD:
+            combined_findings.append({
+                "origin": cand["origin"],
+                "destination": cand["destination"],
+                "depart_date": cand["depart_date"],
+                "return_date": inbound_date,
+                "outbound_price": cand["price"],
+                "inbound_price": inbound_price,
+                "price": total_price,
+                "market": cand["market"],
+            })
+
+    if not combined_findings:
+        print(f"Eşik altı fiyat bulunamadı. En ucuz {len(candidates)} adaydan hiçbiri "
+              f"{PRICE_THRESHOLD} EUR toplamın altında değildi.")
+        # Yine de en ucuz 3 adayı logla ki neye yaklaştığımızı görelim
+        for c in candidates[:3]:
+            print(f"  (bilgi) {c['origin']} → {c['destination']}: sadece gidiş {c['price']} EUR")
+        return
+
+    top_candidates = sorted(combined_findings, key=lambda f: f["price"])[:10]
 
     # Havayolu bilgisi sadece son adaylar için çekiliyor (tüm taramada değil)
     for f in top_candidates:
@@ -346,13 +403,13 @@ def main() -> None:
                 f["skyscanner_price"] = None
             time.sleep(1.0)  # Skyscanner kotası kısıtlı, nazik davran
 
-    lines = ["✈️ *Ucuz Schengen uçuşu bulundu! (gidiş-dönüş)*\n"]
+    lines = ["✈️ *Ucuz Schengen uçuşu bulundu! (gidiş+dönüş ayrı ayrı en ucuz)*\n"]
     for f in top_candidates:
         airline_str = f" - {f['airline']}" if f.get("airline") else ""
         line = (
-            f"*{f['origin']} → {f['destination']}*: {f['price']} EUR "
-            f"({f['depart_date']} - {f.get('return_date', '?')}) "
-            f"[{f.get('market', '?')}]{airline_str}"
+            f"*{f['origin']} → {f['destination']}*: TOPLAM {f['price']:.0f} EUR "
+            f"(gidiş {f['outbound_price']:.0f} + dönüş {f['inbound_price']:.0f}) "
+            f"({f['depart_date']} → {f['return_date']}) [{f.get('market', '?')}]{airline_str}"
         )
         if f.get("skyscanner_price") is not None:
             line += f"\n   ↳ Skyscanner doğrulaması: {f['skyscanner_price']:.0f} EUR"
@@ -360,7 +417,7 @@ def main() -> None:
 
     message = "\n".join(lines)
     send_telegram(bot_token, chat_id, message)
-    print(f"{len(findings)} bulgu bulundu, Telegram'a gönderildi.")
+    print(f"{len(combined_findings)} kombinasyon bulundu, Telegram'a gönderildi.")
 
 
 if __name__ == "__main__":

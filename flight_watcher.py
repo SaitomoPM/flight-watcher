@@ -92,24 +92,33 @@ def cheapest_month_prices(token: str, origin: str, destination: str, month: str,
     month formatı: 'YYYY-MM-01'. market: cache'in hangi ülke sitesinden
     geldiğini belirler (tr, de, us vb.) - çeşitlilik için değiştiriyoruz.
     """
-    resp = requests.get(
-        f"{TRAVELPAYOUTS_BASE}/v2/prices/month-matrix",
-        params={
-            "currency": "eur",
-            "origin": origin,
-            "destination": destination,
-            "show_to_affiliates": "false",
-            "month": month,
-            "one_way": "false",
-            "trip_duration": TRIP_DURATION_WEEKS,
-            "market": market,
-            "token": token,
-        },
-        timeout=30,
-    )
+    params = {
+        "currency": "eur",
+        "origin": origin,
+        "destination": destination,
+        "show_to_affiliates": "false",
+        "month": month,
+        "one_way": "false",
+        "trip_duration": TRIP_DURATION_WEEKS,
+        "market": market,
+        "token": token,
+    }
+    resp = requests.get(f"{TRAVELPAYOUTS_BASE}/v2/prices/month-matrix", params=params, timeout=30)
     if resp.status_code != 200:
         return []
-    return resp.json().get("data", []) or []
+    data = resp.json().get("data", []) or []
+
+    # DEBUG: sadece ilk başarılı çağrıda ham veriyi logla (teşhis için)
+    global _DEBUG_LOGGED
+    if not _DEBUG_LOGGED and data:
+        print("DEBUG - gönderilen istek:", resp.url)
+        print("DEBUG - ilk kayıt (ham):", json.dumps(data[0], ensure_ascii=False))
+        _DEBUG_LOGGED = True
+
+    return data
+
+
+_DEBUG_LOGGED = False
 
 
 # ---------------------------------------------------------------------------

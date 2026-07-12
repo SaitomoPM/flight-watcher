@@ -15,7 +15,8 @@ Amadeus kullanmıyor.
 Ortam değişkenleri (GitHub Secrets ya da yerel .env):
   TRAVELPAYOUTS_TOKEN
   TELEGRAM_BOT_TOKEN
-  TELEGRAM_CHAT_ID
+  TELEGRAM_CHAT_ID     (virgülle ayrılmış birden fazla chat ID verilebilir,
+                         örn. "1729263385,987654321" - her biri bildirim alır)
   RAPIDAPI_KEY          (opsiyonel - yoksa Skyscanner doğrulaması atlanır)
 """
 
@@ -238,13 +239,16 @@ def verify_with_skyscanner(
 # Telegram bildirimi
 # ---------------------------------------------------------------------------
 
-def send_telegram(bot_token: str, chat_id: str, text: str) -> None:
-    resp = requests.post(
-        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
-        timeout=20,
-    )
-    resp.raise_for_status()
+def send_telegram(bot_token: str, chat_ids: str, text: str) -> None:
+    """chat_ids virgülle ayrılmış birden fazla ID içerebilir - her birine ayrı gönderir."""
+    for chat_id in [c.strip() for c in chat_ids.split(",") if c.strip()]:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            print(f"UYARI: Telegram gönderimi başarısız (chat_id={chat_id}): {resp.text}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------

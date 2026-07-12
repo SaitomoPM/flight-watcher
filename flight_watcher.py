@@ -70,6 +70,7 @@ SKYSCANNER_VERIFY_TOP_N = 2
 SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
 SKYID_CACHE_PATH = os.path.join(os.path.dirname(__file__), "skyid_cache.json")
 PRICE_HISTORY_PATH = os.path.join(os.path.dirname(__file__), "data", "price_history.csv")
+SUBSCRIBERS_PATH = os.path.join(os.path.dirname(__file__), "data", "subscribers.json")
 
 # Faz 2'de (dönüş taraması) kaç farklı şehir denensin - artırmak daha fazla
 # istek demek ama daha geniş kapsam sağlar. best_outbound_per_dest'te kaç
@@ -252,6 +253,71 @@ def send_telegram(bot_token: str, chat_ids: str, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Abone sistemi - /start yazan otomatik eklenir, /stop yazan çıkarılır.
+# Liste data/subscribers.json'da tutulur, workflow bunu repoya commit'ler.
+# ---------------------------------------------------------------------------
+
+def _load_subscribers() -> dict:
+    if os.path.exists(SUBSCRIBERS_PATH):
+        with open(SUBSCRIBERS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"subscribers": [], "last_update_id": 0}
+
+
+def _save_subscribers(data: dict) -> None:
+    os.makedirs(os.path.dirname(SUBSCRIBERS_PATH), exist_ok=True)
+    with open(SUBSCRIBERS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def sync_subscribers(bot_token: str) -> list[int]:
+    """
+    Telegram'daki yeni mesajları (getUpdates) kontrol eder. /start yazanları
+    ekler, /stop yazanları çıkarır. En son işlenen update_id'yi kaydederek
+    aynı mesajı tekrar tekrar işlememeyi sağlar.
+    """
+    data = _load_subscribers()
+    offset = data["last_update_id"] + 1
+
+    resp = requests.get(
+        f"https://api.telegram.org/bot{bot_token}/getUpdates",
+        params={"offset": offset, "timeout": 0},
+        timeout=20,
+    )
+    if resp.status_code != 200:
+        print(f"UYARI: getUpdates başarısız: {resp.text}", file=sys.stderr)
+        return data["subscribers"]
+
+    updates = resp.json().get("result", [])
+    subscribers = set(data["subscribers"])
+
+    for update in updates:
+        data["last_update_id"] = max(data["last_update_id"], update["update_id"])
+        message = update.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+        text = (message.get("text") or "").strip().lower()
+
+        if not chat_id:
+            continue
+        if text.startswith("/start"):
+            if chat_id not in subscribers:
+                subscribers.add(chat_id)
+                name = chat.get("first_name", "biri")
+                print(f"Yeni abone: {name} ({chat_id})")
+                send_telegram(bot_token, str(chat_id), "✅ Ucuz Schengen uçuşu bildirimlerine abone oldun!")
+        elif text.startswith("/stop"):
+            if chat_id in subscribers:
+                subscribers.discard(chat_id)
+                print(f"Abonelikten çıkan: {chat_id}")
+                send_telegram(bot_token, str(chat_id), "❌ Bildirimler durduruldu. Tekrar başlamak için /start yaz.")
+
+    data["subscribers"] = sorted(subscribers)
+    _save_subscribers(data)
+    return data["subscribers"]
+
+
+# ---------------------------------------------------------------------------
 # Fiyat geçmişi (kendi verimizi biriktirmek için) - CSV'ye ekleniyor,
 # workflow bunu her koşu sonunda repoya commit'liyor.
 # ---------------------------------------------------------------------------
@@ -341,8 +407,17 @@ def combine_outbound_inbound(
 def main() -> None:
     token = os.environ["TRAVELPAYOUTS_TOKEN"]
     bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+    admin_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")  # senin ID'n - her zaman abone kabul edilir
     rapidapi_key = os.environ.get("RAPIDAPI_KEY")  # opsiyonel
+
+    # Yeni /start ve /stop mesajlarını işleyip abone listesini güncelliyoruz
+    subscribers = set(sync_subscribers(bot_token))
+    for admin_id in [c.strip() for c in admin_chat_id.split(",") if c.strip()]:
+        subscribers.add(int(admin_id))
+
+    if not subscribers:
+        print("Hiç abone yok, bildirim gönderilmeyecek (yine de tarama ve loglama yapılacak).")
+    chat_id = ",".join(str(s) for s in subscribers)
 
     months = months_between(SEARCH_START, SEARCH_END)
 

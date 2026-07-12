@@ -36,15 +36,11 @@ jobs:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: python flight_watcher.py
 
-      - name: Fiyat geçmişini repoya commit'le
-        if: always()  # script Telegram gönderiminde hata verse bile CSV zaten yazılmış olabilir
+      - name: Fiyat geçmişini ve abone listesini repoya commit'le
+        if: always()  # script Telegram gönderiminde hata verse bile dosyalar zaten yazılmış olabilir
         run: |
           git config user.name "flight-watcher-bot"
           git config user.email "actions@github.com"
-          if [ -f data/price_history.csv ]; then
-            git add data/price_history.csv
-            git diff --staged --quiet || git commit -m "fiyat gecmisi guncellendi [otomatik]"
-            git push
-          else
-            echo "price_history.csv henuz olusmadi, atlaniyor."
-          fi
+          git add data/price_history.csv data/subscribers.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "fiyat gecmisi + abone listesi guncellendi [otomatik]"
+          git push || echo "push edilecek bir şey yok"

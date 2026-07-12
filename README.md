@@ -21,6 +21,12 @@ eşik altı fiyat bulursa Telegram'a mesaj atar. Ücretsiz
    Dönen JSON'da `"chat":{"id": 123456789...}` kısmındaki sayı senin chat ID'n.
    Hâlâ boş dönerse: bota mesaj attığından ve token'ı boşluksuz kopyaladığından emin ol.
 
+**Otomatik abone sistemi**: Artık chat ID'leri elle bulup secret'a eklemene
+gerek yok. Botunu paylaştığın herkes `/start` yazdığında script otomatik
+olarak onu abone listesine ekliyor (`data/subscribers.json`), `/stop` yazan
+da otomatik çıkıyor. Sadece `TELEGRAM_CHAT_ID` secret'ına **senin** ID'ni
+(admin olarak her zaman abone) koyman yeterli, gerisi otomatik.
+
 ### 2. Travelpayouts hesabı aç (Amadeus yerine)
 1. https://www.travelpayouts.com adresinde ücretsiz kaydol (email + şifre, anında aktif).
 2. Giriş yaptıktan sonra bir **affiliate programına bağlan** — "Aviasales" programını seç
@@ -68,6 +74,10 @@ Eşik altı bir şey bulunursa Telegram'a mesaj gelecek.
 - Cron zamanlaması: `.github/workflows/flight-watch.yml` içindeki `cron` satırı
 
 ## Notlar
+- **Otomatik abone sistemi**: Bota `/start` yazan herkes otomatik bildirim
+  almaya başlıyor, `/stop` yazan çıkıyor. Liste `data/subscribers.json`'da
+  tutuluyor ve her koşuda repoya commit'leniyor (fiyat geçmişi gibi).
+  `TELEGRAM_CHAT_ID` secret'ındaki ID(ler) her zaman admin olarak dahil edilir.
 - **Mimari değişikliği (en önemlisi)**: Sistem artık round-trip "paket" fiyatı
   aramıyor. Bunun yerine flightlist.io gibi araçların kullandığı stratejiyi
   uyguluyor: **en ucuz GİDİŞ + en ucuz DÖNÜŞÜ ayrı ayrı bulup topluyor.**

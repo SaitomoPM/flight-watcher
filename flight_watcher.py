@@ -71,6 +71,7 @@ SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
 SKYID_CACHE_PATH = os.path.join(os.path.dirname(__file__), "skyid_cache.json")
 PRICE_HISTORY_PATH = os.path.join(os.path.dirname(__file__), "data", "price_history.csv")
 SUBSCRIBERS_PATH = os.path.join(os.path.dirname(__file__), "data", "subscribers.json")
+NOTIFIED_CACHE_PATH = os.path.join(os.path.dirname(__file__), "data", "notified_cache.json")
 
 # Faz 2'de (dönüş taraması) kaç farklı şehir denensin - artırmak daha fazla
 # istek demek ama daha geniş kapsam sağlar. best_outbound_per_dest'te kaç
@@ -177,10 +178,12 @@ def resolve_sky_id(rapidapi_key: str, iata: str, cache: dict) -> dict | None:
         timeout=20,
     )
     if resp.status_code != 200:
+        print(f"UYARI: Skyscanner searchAirport({iata}) {resp.status_code} döndü: {resp.text[:300]}", file=sys.stderr)
         return None
 
     results = resp.json().get("data", [])
     if not results:
+        print(f"UYARI: Skyscanner searchAirport({iata}) boş sonuç döndürdü.", file=sys.stderr)
         return None
 
     first = results[0]
@@ -189,6 +192,7 @@ def resolve_sky_id(rapidapi_key: str, iata: str, cache: dict) -> dict | None:
         "entityId": first.get("entityId") or first.get("navigation", {}).get("entityId"),
     }
     if not resolved["skyId"] or not resolved["entityId"]:
+        print(f"UYARI: Skyscanner searchAirport({iata}) yanıtında skyId/entityId yok: {first}", file=sys.stderr)
         return None
 
     cache[iata] = resolved
@@ -203,6 +207,7 @@ def verify_with_skyscanner(
     origin_ids = resolve_sky_id(rapidapi_key, origin, cache)
     dest_ids = resolve_sky_id(rapidapi_key, destination, cache)
     if not origin_ids or not dest_ids:
+        print(f"UYARI: Skyscanner doğrulaması atlandı ({origin}->{destination}): skyId çözümlenemedi.", file=sys.stderr)
         return None
 
     params = {
@@ -226,10 +231,15 @@ def verify_with_skyscanner(
         timeout=30,
     )
     if resp.status_code != 200:
+        print(
+            f"UYARI: Skyscanner searchFlights({origin}->{destination}) {resp.status_code} döndü: {resp.text[:300]}",
+            file=sys.stderr,
+        )
         return None
 
     itineraries = resp.json().get("data", {}).get("itineraries", [])
     if not itineraries:
+        print(f"UYARI: Skyscanner searchFlights({origin}->{destination}) hiç itinerary döndürmedi.", file=sys.stderr)
         return None
 
     prices = [it["price"]["raw"] for it in itineraries if it.get("price", {}).get("raw")]
@@ -315,6 +325,63 @@ def sync_subscribers(bot_token: str) -> list[int]:
     data["subscribers"] = sorted(subscribers)
     _save_subscribers(data)
     return data["subscribers"]
+
+
+# ---------------------------------------------------------------------------
+# Bildirim dedup - aynı rota+tarih kombinasyonu fiyatı düşmediği sürece
+# tekrar tekrar Telegram'a gönderilmesin diye son bildirilen fiyatları
+# tutuyoruz. data/notified_cache.json'da saklanır, workflow bunu da commit'ler.
+# ---------------------------------------------------------------------------
+
+def _combo_key(c: dict) -> str:
+    return f"{c['origin']}|{c['destination']}|{c['depart_date']}|{c['return_date']}"
+
+
+def _load_notified_cache() -> dict:
+    if os.path.exists(NOTIFIED_CACHE_PATH):
+        with open(NOTIFIED_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_notified_cache(cache: dict) -> None:
+    os.makedirs(os.path.dirname(NOTIFIED_CACHE_PATH), exist_ok=True)
+    with open(NOTIFIED_CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def filter_unnotified_or_cheaper(candidates: list[dict], cache: dict) -> list[dict]:
+    """
+    Daha önce aynı fiyat ya da daha ucuzuyla bildirilmiş kombinasyonları eler.
+    Fiyat düştüyse (gerçek bir güncelleme) yine bildirir.
+    """
+    result = []
+    for c in candidates:
+        key = _combo_key(c)
+        prev = cache.get(key)
+        if prev is not None and c["price"] >= prev["price"] - 0.01:
+            continue
+        result.append(c)
+    return result
+
+
+def update_notified_cache(cache: dict, sent: list[dict]) -> None:
+    """Gönderilen kombinasyonları cache'e yazar, geçmişte kalan tarihleri temizler."""
+    today = date.today()
+    pruned = {}
+    for key, v in cache.items():
+        try:
+            if date.fromisoformat(v.get("depart_date", "")) >= today:
+                pruned[key] = v
+        except ValueError:
+            continue
+    for c in sent:
+        pruned[_combo_key(c)] = {
+            "price": c["price"],
+            "depart_date": c["depart_date"],
+            "notified_at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+    _save_notified_cache(pruned)
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +562,17 @@ def main() -> None:
 
     top_candidates = sorted(combined_findings, key=lambda f: f["price"])[:10]
 
+    # Daha önce aynı fiyat ya da daha ucuzuyla bildirilmiş kombinasyonları ele -
+    # Travelpayouts cache'i günlerce değişmeden aynı sonucu verebiliyor, bu da
+    # her koşuda aynı bileti tekrar tekrar Telegram'a göndermemizi önlüyor.
+    notified_cache = _load_notified_cache()
+    top_candidates = filter_unnotified_or_cheaper(top_candidates, notified_cache)
+
+    if not top_candidates:
+        print("Eşik altı bulgular var ama hepsi daha önce aynı/daha düşük fiyatla bildirilmişti, "
+              "tekrar bildirim gönderilmiyor.")
+        return
+
     # Havayolu bilgisi sadece son adaylar için çekiliyor (tüm taramada değil)
     for f in top_candidates:
         depart_month = f["depart_date"][:7] if f.get("depart_date") else None  # 'YYYY-MM'
@@ -539,7 +617,8 @@ def main() -> None:
 
     message = "\n".join(lines)
     send_telegram(bot_token, chat_id, message)
-    print(f"{len(combined_findings)} kombinasyon bulundu, Telegram'a gönderildi.")
+    update_notified_cache(notified_cache, top_candidates)
+    print(f"{len(top_candidates)} yeni/güncellenmiş kombinasyon bulundu, Telegram'a gönderildi.")
 
 
 if __name__ == "__main__":

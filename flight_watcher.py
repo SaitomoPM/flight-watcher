@@ -79,6 +79,14 @@ NOTIFIED_CACHE_PATH = os.path.join(os.path.dirname(__file__), "data", "notified_
 # günlerde farklı şehirler çıkabildiği için sayı 27'den fazla olabilir).
 TOP_CANDIDATES_FOR_INBOUND_SCAN = 30
 
+# Her varış şehri için kaç farklı GİDİŞ tarihi denensin. SADECE en ucuz gidiş
+# tarihine kilitlenip ondan dönüş aramak yanıltıcı olabiliyor: o tarihin dönüş
+# penceresinde (MIN/MAX_STAY_DAYS) pahalı bir dönüş çıkarsa, aslında birkaç
+# gün farklı (biraz daha pahalı) bir gidiş tarihiyle çok daha ucuz bir dönüş
+# eşleşebilecekken bu hiç denenmemiş oluyordu. Birkaç aday tarih deneyip
+# TOPLAMI en düşük olanı seçiyoruz.
+OUTBOUND_DATES_PER_DEST = 3
+
 
 # ---------------------------------------------------------------------------
 # Travelpayouts (Aviasales) yardımcı fonksiyonları
@@ -511,39 +519,61 @@ def main() -> None:
         print("Gidiş bileti bulunamadı.")
         return
 
-    # Her varış şehri için en ucuz GİDİŞ'i tut (tek bir şehir domine etmesin)
+    # Her varış şehri için en ucuz GİDİŞ'i tut (tek bir şehir domine etmesin) -
+    # bu SADECE hangi şehirlerin Faz 2'ye aday olacağını sıralamak için, hangi
+    # GİDİŞ TARİHİNİN kullanılacağını değil (o karar aşağıda, birden fazla
+    # tarih denenerek veriliyor).
     best_outbound_per_dest: dict[str, dict] = {}
+    outbound_offers_by_dest: dict[str, list[dict]] = {}
     for o in outbound_offers:
         key = o["destination"]
         if key not in best_outbound_per_dest or o["price"] < best_outbound_per_dest[key]["price"]:
             best_outbound_per_dest[key] = o
+        outbound_offers_by_dest.setdefault(key, []).append(o)
 
     # En ucuz gidişi olan ilk N şehri, dönüş taraması için aday seçiyoruz
     candidates = sorted(best_outbound_per_dest.values(), key=lambda o: o["price"])[:TOP_CANDIDATES_FOR_INBOUND_SCAN]
 
-    # FAZ 2 - DÖNÜŞ TARAMASI: her adayın varış şehrinden gerçek dönüşü bul,
-    # gidiş + dönüşü toplayarak GERÇEK toplam maliyeti hesapla.
+    # FAZ 2 - DÖNÜŞ TARAMASI: her aday şehir için birkaç farklı gidiş tarihi
+    # dene (OUTBOUND_DATES_PER_DEST), her birine gerçek dönüşü bul, gidiş +
+    # dönüşü toplayarak GERÇEK toplam maliyeti hesapla, şehir başına TOPLAMI
+    # en düşük olan kombinasyonu tut.
     # NOT: eşikten BAĞIMSIZ tüm kombinasyonları topluyoruz (all_combos) -
     # geçmiş veri biriktirmek için, eşik altı olanları bildirim için ayırıyoruz.
     all_combos = []
     for cand in candidates:
-        result = combine_outbound_inbound(
-            token, cand["origin"], cand["destination"], cand["depart_date"], months, MARKETS
-        )
-        if result is None:
-            continue
-        inbound_price, inbound_date = result
-        total_price = cand["price"] + inbound_price
-        all_combos.append({
-            "origin": cand["origin"],
-            "destination": cand["destination"],
-            "depart_date": cand["depart_date"],
-            "return_date": inbound_date,
-            "outbound_price": cand["price"],
-            "inbound_price": inbound_price,
-            "price": total_price,
-            "market": cand["market"],
-        })
+        date_candidates = sorted(
+            outbound_offers_by_dest[cand["destination"]], key=lambda o: o["price"]
+        )[:OUTBOUND_DATES_PER_DEST]
+        seen_dates = set()
+        best_combo = None
+        for outbound in date_candidates:
+            if outbound["depart_date"] in seen_dates:
+                continue
+            seen_dates.add(outbound["depart_date"])
+
+            result = combine_outbound_inbound(
+                token, outbound["origin"], outbound["destination"], outbound["depart_date"], months, MARKETS
+            )
+            if result is None:
+                continue
+            inbound_price, inbound_date = result
+            total_price = outbound["price"] + inbound_price
+            combo = {
+                "origin": outbound["origin"],
+                "destination": outbound["destination"],
+                "depart_date": outbound["depart_date"],
+                "return_date": inbound_date,
+                "outbound_price": outbound["price"],
+                "inbound_price": inbound_price,
+                "price": total_price,
+                "market": outbound["market"],
+            }
+            if best_combo is None or combo["price"] < best_combo["price"]:
+                best_combo = combo
+
+        if best_combo is not None:
+            all_combos.append(best_combo)
 
     # Geçmiş veri olarak HER ŞEYİ kaydet (eşik altı olsun olmasın) - trend
     # görmek için lazım. Eşik uygulanmamış ham veri.

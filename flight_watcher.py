@@ -438,6 +438,32 @@ def months_between(start: date, end: date) -> list[str]:
     return months
 
 
+def scan_outbound_dates_for_destination(
+    token: str, origin: str, destination: str, months: list[str], markets: list[str]
+) -> list[dict]:
+    """
+    Faz 1'in aksine (ülke bazlı toplu tarama - bir şehir sadece o gün TÜM
+    Schengen'de en ucuzsa veriye giriyor) bu fonksiyon TEK bir şehri doğrudan
+    sorgular. Böylece o şehrin çoğu günde en ucuz olmasa bile gerçekte kaç
+    paraya uçtuğunu görürüz (dönüş tarafı zaten aynı şekilde, destination'a
+    ülke değil şehir kodu verilerek doğrudan sorgulanıyordu).
+    """
+    offers = []
+    for month in months:
+        for market in markets:
+            raw = cheapest_one_way_prices(token, origin, destination, month, market)
+            time.sleep(0.3)
+            for offer in raw:
+                d = offer.get("depart_date")
+                price = float(offer.get("value", offer.get("price", 0)))
+                if d and price > 0:
+                    offers.append({
+                        "origin": origin, "destination": destination,
+                        "depart_date": d, "price": price, "market": market,
+                    })
+    return offers
+
+
 def combine_outbound_inbound(
     token: str, origin: str, destination: str, depart_date: str, months: list[str], markets: list[str]
 ) -> tuple[float, str] | None:
@@ -520,31 +546,32 @@ def main() -> None:
         return
 
     # Her varış şehri için en ucuz GİDİŞ'i tut (tek bir şehir domine etmesin) -
-    # bu SADECE hangi şehirlerin Faz 2'ye aday olacağını sıralamak için, hangi
-    # GİDİŞ TARİHİNİN kullanılacağını değil (o karar aşağıda, birden fazla
-    # tarih denenerek veriliyor).
+    # bu SADECE hangi şehirlerin Faz 2'ye aday olacağını kabaca sıralamak için;
+    # ülke bazlı toplu taramadan geldiği için seyrek/eksik olabilir, o yüzden
+    # asıl aday tarihler Faz 2'de o şehir DOĞRUDAN sorgulanarak bulunuyor.
     best_outbound_per_dest: dict[str, dict] = {}
-    outbound_offers_by_dest: dict[str, list[dict]] = {}
     for o in outbound_offers:
         key = o["destination"]
         if key not in best_outbound_per_dest or o["price"] < best_outbound_per_dest[key]["price"]:
             best_outbound_per_dest[key] = o
-        outbound_offers_by_dest.setdefault(key, []).append(o)
 
     # En ucuz gidişi olan ilk N şehri, dönüş taraması için aday seçiyoruz
     candidates = sorted(best_outbound_per_dest.values(), key=lambda o: o["price"])[:TOP_CANDIDATES_FOR_INBOUND_SCAN]
 
-    # FAZ 2 - DÖNÜŞ TARAMASI: her aday şehir için birkaç farklı gidiş tarihi
-    # dene (OUTBOUND_DATES_PER_DEST), her birine gerçek dönüşü bul, gidiş +
-    # dönüşü toplayarak GERÇEK toplam maliyeti hesapla, şehir başına TOPLAMI
-    # en düşük olan kombinasyonu tut.
+    # FAZ 2 - GİDİŞ+DÖNÜŞ TARAMASI: her aday şehir DOĞRUDAN sorgulanıp (Faz
+    # 1'in seyrek ülke-bazlı örneklemine güvenmeden) gerçek ucuz gidiş
+    # tarihleri bulunuyor, en ucuz birkaçı (OUTBOUND_DATES_PER_DEST) için
+    # gerçek dönüş aranıyor, TOPLAMI en düşük olan kombinasyon tutuluyor.
     # NOT: eşikten BAĞIMSIZ tüm kombinasyonları topluyoruz (all_combos) -
     # geçmiş veri biriktirmek için, eşik altı olanları bildirim için ayırıyoruz.
     all_combos = []
     for cand in candidates:
-        date_candidates = sorted(
-            outbound_offers_by_dest[cand["destination"]], key=lambda o: o["price"]
-        )[:OUTBOUND_DATES_PER_DEST]
+        direct_outbound_offers = scan_outbound_dates_for_destination(
+            token, cand["origin"], cand["destination"], months, MARKETS
+        )
+        if not direct_outbound_offers:
+            continue
+        date_candidates = sorted(direct_outbound_offers, key=lambda o: o["price"])[:OUTBOUND_DATES_PER_DEST]
         seen_dates = set()
         best_combo = None
         for outbound in date_candidates:
